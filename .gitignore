@@ -1,0 +1,9 @@
+# Intermediate / unused assets
+*.raw.mp3
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Frames cache
+frames/

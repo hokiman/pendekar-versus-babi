@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Knight vs Pig Monster</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  overflow: hidden;
+  height: 100vh;
+  width: 100vw;
+  background: #000;
+  touch-action: none;
+}
+canvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+#ui {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: linear-gradient(transparent, rgba(0,0,0,0.5));
+  z-index: 10;
+}
+#score-display {
+  font-family: 'Courier New', monospace;
+  font-size: 18px;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
+#score-display span { color: #fbbf24; }
+#btn-group {
+  display: flex;
+  gap: 10px;
+}
+.ctrl-btn {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.3);
+  background: rgba(255,255,255,0.1);
+  color: #fff;
+  font-size: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+  backdrop-filter: blur(4px);
+  transition: background 0.1s, border-color 0.1s;
+}
+.ctrl-btn:active, .ctrl-btn.pressed {
+  background: rgba(255,255,255,0.3);
+  border-color: rgba(255,255,255,0.6);
+}
+.ctrl-btn.atk { border-color: rgba(239,68,68,0.5); }
+.ctrl-btn.atk:active, .ctrl-btn.atk.pressed { border-color: rgba(239,68,68,0.8); background: rgba(239,68,68,0.3); }
+#move-group {
+  display: flex;
+  gap: 4px;
+}
+#sound-toggle {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 20;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.3);
+  background: rgba(0,0,0,0.3);
+  color: #fff;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  backdrop-filter: blur(4px);
+}
+</style>
+</head>
+<body>
+
+<!-- Preload audio as HTML5 audio elements (most mobile-compatible) -->
+<audio id="aud-knight-walk" src="sfx-knight-walk.mp3" preload="auto"></audio>
+<audio id="aud-knight-jump" src="sfx-knight-jump.mp3" preload="auto"></audio>
+<audio id="aud-knight-attack" src="sfx-knight-attack.mp3" preload="auto"></audio>
+<audio id="aud-pig-walk" src="sfx-pig-walk.mp3" preload="auto" loop></audio>
+<audio id="aud-pig-stunned" src="sfx-pig-stunned.mp3" preload="auto"></audio>
+<audio id="aud-pig-die" src="sfx-pig-die.mp3" preload="auto"></audio>
+
+<canvas id="game"></canvas>
+
+<div id="sound-toggle">🔊</div>
+
+<div id="ui">
+  <div id="score-display">☠️ <span id="kill-count">0</span></div>
+  <div id="move-group">
+    <div class="ctrl-btn" data-key="ArrowLeft">◀</div>
+    <div class="ctrl-btn" data-key="ArrowRight">▶</div>
+  </div>
+  <div id="btn-group">
+    <div class="ctrl-btn" data-key="ArrowUp">⬆</div>
+    <div class="ctrl-btn atk" data-key="z">⚔️</div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// Use lower internal resolution for performance (pixel art doesn't need retina)
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+}
+resize();
+window.addEventListener('resize', resize);
+
+// --- Sound System using HTML5 Audio (mobile friendly) ---
+let soundEnabled = true;
+let audioUnlocked = false;
+
+// Unlock audio on first interaction (iOS/Android policy)
+function unlockAudio() {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  // Play all audios muted once to unlock
+  document.querySelectorAll('audio').forEach(a => {
+    a.volume = 0;
+    a.play().then(() => { a.pause(); a.currentTime = 0; a.volume = 1; }).catch(() => {});
+  });
+}
+
+document.addEventListener('touchstart', unlockAudio, { passive: true });
+document.addEventListener('click', unlockAudio);
+
+const AUD = {
+  'knight-walk': document.getElementById('aud-knight-walk'),
+  'knight-jump': document.getElementById('aud-knight-jump'),
+  'knight-attack': document.getElementById('aud-knight-attack'),
+  'pig-walk': document.getElementById('aud-pig-walk'),
+  'pig-stunned': document.getElementById('aud-pig-stunned'),
+  'pig-die': document.getElementById('aud-pig-die'),
+};
+
+// Set volumes
+Object.values(AUD).forEach(a => { a.volume = 0.5; });
+AUD['pig-walk'].volume = 0.35;
+
+function playSFX(name) {
+  if (!soundEnabled || !AUD[name]) return;
+  const a = AUD[name];
+  if (a.loop) {
+    if (a.paused) a.play().catch(() => {});
+  } else {
+    a.currentTime = 0;
+    a.play().catch(() => {});
+  }
+}
+
+function stopSFX(name) {
+  if (!AUD[name]) return;
+  const a = AUD[name];
+  a.pause();
+  a.currentTime = 0;
+}
+
+document.getElementById('sound-toggle').addEventListener('click', () => {
+  soundEnabled = !soundEnabled;
+  document.getElementById('sound-toggle').textContent = soundEnabled ? '🔊' : '🔇';
+  if (!soundEnabled) {
+    Object.values(AUD).forEach(a => { a.pause(); });
+  }
+});
+
+// Knight (old design)
+const KNIGHT_COLS = 6, KNIGHT_ROWS = 4;
+const KNIGHT_URL = 'transparent-old-knight.png';
+const KNIGHT_ANIM = { IDLE: 0, WALK: 1, JUMP: 2, ATTACK: 3 };
+
+// Pig
+const PIG_COLS = 6, PIG_ROWS = 3;
+const PIG_WALK_ROW = 0;
+const PIG_DEATH_ROW = 2;
+const PIG_URL = 'transparent-nb-pig-monster.png';
+
+const BG_URL = 'bg-medieval.png';
+
+let knightImg, pigImg, bgImg;
+let knightFW = 0, knightFH = 0;
+let pigFW = 0, pigFH = 0;
+let loaded = 0;
+
+// Pre-sliced frame canvases for fast blitting
+let knightFrames = []; // [anim][frame] = canvas
+let pigWalkFrames = []; // [frame] = canvas
+let pigDeathFrames = []; // [frame] = canvas
+let bgCanvas = null;
+
+function sliceFrames(img, cols, rows) {
+  const fw = img.width / cols;
+  const fh = img.height / rows;
+  const frames = [];
+  for (let r = 0; r < rows; r++) {
+    frames[r] = [];
+    for (let c = 0; c < cols; c++) {
+      const cv = document.createElement('canvas');
+      cv.width = fw;
+      cv.height = fh;
+      cv.getContext('2d').drawImage(img, c * fw, r * fh, fw, fh, 0, 0, fw, fh);
+      frames[r][c] = cv;
+    }
+  }
+  return frames;
+}
+
+function sliceRow(img, cols, row) {
+  const fw = img.width / cols;
+  const fh = img.height / (img.height / (pigFH || fh));
+  const frames = [];
+  for (let c = 0; c < cols; c++) {
+    const cv = document.createElement('canvas');
+    cv.width = fw;
+    cv.height = fh;
+    cv.getContext('2d').drawImage(img, c * fw, row * fh, fw, fh, 0, 0, fw, fh);
+    frames[c] = cv;
+  }
+  return frames;
+}
+
+function checkLoaded() {
+  loaded++;
+  if (loaded === 3) {
+    // Pre-slice all frames
+    knightFrames = sliceFrames(knightImg, KNIGHT_COLS, KNIGHT_ROWS);
+    const pfw = pigImg.width / PIG_COLS;
+    const pfh = pigImg.height / PIG_ROWS;
+    pigWalkFrames = [];
+    pigDeathFrames = [];
+    for (let c = 0; c < PIG_COLS; c++) {
+      const cv1 = document.createElement('canvas');
+      cv1.width = pfw; cv1.height = pfh;
+      cv1.getContext('2d').drawImage(pigImg, c * pfw, PIG_WALK_ROW * pfh, pfw, pfh, 0, 0, pfw, pfh);
+      pigWalkFrames[c] = cv1;
+      
+      const cv2 = document.createElement('canvas');
+      cv2.width = pfw; cv2.height = pfh;
+      cv2.getContext('2d').drawImage(pigImg, c * pfw, PIG_DEATH_ROW * pfh, pfw, pfh, 0, 0, pfw, pfh);
+      pigDeathFrames[c] = cv2;
+    }
+    // Pre-render bg
+    bgCanvas = document.createElement('canvas');
+    bgCanvas.width = bgImg.width;
+    bgCanvas.height = bgImg.height;
+    bgCanvas.getContext('2d').drawImage(bgImg, 0, 0);
+    
+    init();
+  }
+}
+
+knightImg = new Image();
+knightImg.crossOrigin = 'anonymous';
+knightImg.onload = () => {
+  knightFW = knightImg.width / KNIGHT_COLS;
+  knightFH = knightImg.height / KNIGHT_ROWS;
+  checkLoaded();
+};
+knightImg.src = KNIGHT_URL;
+
+pigImg = new Image();
+pigImg.crossOrigin = 'anonymous';
+pigImg.onload = () => {
+  pigFW = pigImg.width / PIG_COLS;
+  pigFH = pigImg.height / PIG_ROWS;
+  checkLoaded();
+};
+pigImg.src = PIG_URL;
+
+bgImg = new Image();
+bgImg.crossOrigin = 'anonymous';
+bgImg.onload = checkLoaded;
+bgImg.src = BG_URL;
+
+// --- Game State ---
+let groundY;
+let knightScale, pigScale;
+
+const knight = {
+  x: 0, y: 0, vx: 0, vy: 0,
+  facing: 1, anim: KNIGHT_ANIM.IDLE,
+  frame: 0, frameTimer: 0,
+  grounded: true, attacking: false, attackTimer: 0
+};
+
+const SPEED = 3.5;
+const JUMP_FORCE = -10;
+const GRAVITY = 0.55;
+const KNIGHT_FRAME_DUR = { 0: 130, 1: 85, 2: 100, 3: 75 };
+
+// Pig states
+let pigs = [];
+let killCount = 0;
+let pigAlive = false;
+const PIG_SPEED = 1.0;
+const PIG_FRAME_DUR = 110;
+const PIG_DEATH_FRAME_DUR = 130;
+const PIG_STUNNED_FRAME_DUR = 200;
+const PIG_STOP_DIST = 50;
+
+// Input
+const keys = {};
+
+document.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  e.preventDefault();
+});
+document.addEventListener('keyup', e => {
+  keys[e.key] = false;
+});
+
+document.querySelectorAll('.ctrl-btn').forEach(btn => {
+  const key = btn.dataset.key;
+  const press = () => { keys[key] = true; btn.classList.add('pressed'); unlockAudio(); };
+  const release = () => { keys[key] = false; btn.classList.remove('pressed'); };
+  btn.addEventListener('mousedown', press);
+  btn.addEventListener('mouseup', release);
+  btn.addEventListener('mouseleave', release);
+  btn.addEventListener('touchstart', e => { e.preventDefault(); press(); });
+  btn.addEventListener('touchend', e => { e.preventDefault(); release(); });
+  btn.addEventListener('touchcancel', e => { e.preventDefault(); release(); });
+});
+
+function spawnPig() {
+  if (pigAlive) return;
+  const fromRight = Math.random() > 0.5;
+  pigs.push({
+    x: fromRight ? canvas.width + 40 : -40,
+    facing: fromRight ? -1 : 1,
+    hp: 2,
+    stunned: false,
+    stunTimer: 0,
+    dying: false,
+    deathTimer: 0,
+    frame: 0,
+    frameTimer: 0,
+    stopped: false,
+    walkSound: false,
+  });
+  pigAlive = true;
+}
+
+function init() {
+  groundY = canvas.height * 0.72;
+  knight.x = canvas.width * 0.35;
+  knight.y = groundY;
+
+  const isPortrait = canvas.height > canvas.width * 1.2;
+  const targetCharH = isPortrait ? canvas.height * 0.18 : canvas.height * 0.22;
+  knightScale = targetCharH / knightFH;
+  pigScale = targetCharH / pigFH;
+
+  spawnPig();
+  requestAnimationFrame(gameLoop);
+}
+
+let lastTime = 0;
+let knightWalkSFXCooldown = 0;
+
+function gameLoop(time) {
+  const dt = lastTime ? Math.min(time - lastTime, 33) : 16;
+  lastTime = time;
+
+  // Recalc layout on resize
+  const isPortrait = canvas.height > canvas.width * 1.2;
+  groundY = canvas.height * (isPortrait ? 0.68 : 0.72);
+
+  update(dt);
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+
+function update(dt) {
+  // --- Knight ---
+  let moving = false;
+
+  if (!knight.attacking) {
+    if (keys['ArrowLeft'] || keys['a']) { knight.vx = -SPEED; knight.facing = -1; moving = true; }
+    else if (keys['ArrowRight'] || keys['d']) { knight.vx = SPEED; knight.facing = 1; moving = true; }
+    else { knight.vx = 0; }
+  }
+
+  if ((keys['ArrowUp'] || keys[' '] || keys['w']) && knight.grounded && !knight.attacking) {
+    knight.vy = JUMP_FORCE;
+    knight.grounded = false;
+    knight.anim = KNIGHT_ANIM.JUMP;
+    knight.frame = 0;
+    knight.frameTimer = 0;
+    playSFX('knight-jump');
+  }
+
+  if ((keys['z'] || keys['Z']) && !knight.attacking && knight.grounded) {
+    knight.attacking = true;
+    knight.attackTimer = 0;
+    knight.anim = KNIGHT_ANIM.ATTACK;
+    knight.frame = 0;
+    knight.frameTimer = 0;
+    knight.vx = 0;
+    playSFX('knight-attack');
+  }
+
+  if (!knight.grounded) knight.vy += GRAVITY;
+  knight.x += knight.vx;
+  knight.y += knight.vy;
+
+  if (knight.y >= groundY) {
+    knight.y = groundY;
+    knight.vy = 0;
+    knight.grounded = true;
+  }
+  knight.x = Math.max(60, Math.min(canvas.width - 60, knight.x));
+
+  if (knight.attacking) {
+    knight.attackTimer += dt;
+    if (knight.attackTimer > 6 * KNIGHT_FRAME_DUR[KNIGHT_ANIM.ATTACK]) {
+      knight.attacking = false;
+    }
+    // Hit detection on slash frames
+    if (knight.frame >= 2 && knight.frame <= 4) {
+      const dir = knight.facing;
+      const knightDrawW = knightFW * knightScale;
+      const hitX = dir === 1 ? knight.x + knightDrawW * 0.3 : knight.x - knightDrawW * 0.8;
+      const hitW = knightDrawW * 0.5;
+      const hitY = knight.y - knightFH * knightScale * 0.7;
+      const hitH = knightFH * knightScale * 0.5;
+
+      pigs.forEach(pig => {
+        if (pig.hp <= 0) return;
+        const pigDrawW = pigFW * pigScale;
+        const pigBox = {
+          x: pig.x - pigDrawW * 0.4,
+          y: groundY - pigFH * pigScale * 0.6,
+          w: pigDrawW * 0.8,
+          h: pigFH * pigScale * 0.5
+        };
+        if (hitX < pigBox.x + pigBox.w && hitX + hitW > pigBox.x &&
+            hitY < pigBox.y + pigBox.h && hitY + hitH > pigBox.y) {
+          pig.hp--;
+          stopSFX('pig-walk');
+          pig.walkSound = false;
+          if (pig.hp <= 0) {
+            pig.dying = true;
+            pig.deathTimer = 0;
+            pig.frame = 0;
+            pig.frameTimer = 0;
+            killCount++;
+            document.getElementById('kill-count').textContent = killCount;
+            playSFX('pig-die');
+          } else {
+            pig.stunned = true;
+            pig.stunTimer = 0;
+            pig.frame = 0;
+            pig.frameTimer = 0;
+            playSFX('pig-stunned');
+          }
+        }
+      });
+    }
+  }
+
+  if (!knight.attacking && knight.grounded) {
+    if (moving) {
+      if (knight.anim !== KNIGHT_ANIM.WALK) {
+        knight.anim = KNIGHT_ANIM.WALK;
+        knight.frame = 0;
+        knight.frameTimer = 0;
+      }
+      // Play walk sound periodically
+      knightWalkSFXCooldown -= dt;
+      if (knightWalkSFXCooldown <= 0) {
+        playSFX('knight-walk');
+        knightWalkSFXCooldown = 280;
+      }
+    } else {
+      if (knight.anim !== KNIGHT_ANIM.IDLE) {
+        knight.anim = KNIGHT_ANIM.IDLE;
+        knight.frame = 0;
+        knight.frameTimer = 0;
+      }
+      knightWalkSFXCooldown = 0;
+    }
+  }
+  if (!knight.grounded && !knight.attacking) knight.anim = KNIGHT_ANIM.JUMP;
+
+  knight.frameTimer += dt;
+  if (knight.frameTimer >= KNIGHT_FRAME_DUR[knight.anim]) {
+    knight.frameTimer = 0;
+    knight.frame++;
+    if (knight.anim === KNIGHT_ANIM.ATTACK && knight.frame >= 6) knight.frame = 5;
+    else if (knight.anim === KNIGHT_ANIM.JUMP && knight.frame >= 6) knight.frame = 5;
+    else knight.frame = knight.frame % 6;
+  }
+
+  // --- Pig update ---
+  let anyAlive = false;
+  pigs = pigs.filter(pig => {
+    // DYING state
+    if (pig.dying) {
+      pig.deathTimer += dt;
+      pig.frameTimer += dt;
+      if (pig.frameTimer >= PIG_DEATH_FRAME_DUR) {
+        pig.frameTimer = 0;
+        pig.frame++;
+      }
+      if (pig.frame >= 6 || pig.deathTimer > 1200) {
+        pigAlive = false;
+        return false;
+      }
+      return true;
+    }
+
+    // STUNNED state
+    if (pig.stunned) {
+      pig.stunTimer += dt;
+      pig.frameTimer += dt;
+      if (pig.frameTimer >= PIG_STUNNED_FRAME_DUR) {
+        pig.frameTimer = 0;
+        pig.frame = (pig.frame + 1) % 2;
+      }
+      anyAlive = true;
+      return true;
+    }
+
+    // WALKING / STOPPED state
+    anyAlive = true;
+    const dx = knight.x - pig.x;
+    const dist = Math.abs(dx);
+    pig.facing = dx > 0 ? 1 : -1;
+
+    if (dist > PIG_STOP_DIST) {
+      pig.x += pig.facing * PIG_SPEED;
+      pig.stopped = false;
+      // Start pig walk sound if not playing
+      if (!pig.walkSound) {
+        playSFX('pig-walk');
+        pig.walkSound = true;
+      }
+    } else {
+      pig.stopped = true;
+      // Stop pig sound when stopped
+      if (pig.walkSound) {
+        stopSFX('pig-walk');
+        pig.walkSound = false;
+      }
+    }
+
+    pig.frameTimer += dt;
+    if (pig.frameTimer >= PIG_FRAME_DUR) {
+      pig.frameTimer = 0;
+      pig.frame = (pig.frame + 1) % 6;
+    }
+
+    return true;
+  });
+
+  // Spawn new pig only when none alive
+  if (!anyAlive && pigs.length === 0 && !pigAlive) {
+    setTimeout(() => { if (!pigAlive) spawnPig(); }, 2000);
+  }
+}
+
+function draw() {
+  const W = canvas.width;
+  const H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  // Background (pre-rendered)
+  if (bgCanvas) {
+    const bgScale = Math.max(W / bgCanvas.width, H / bgCanvas.height);
+    const bgW = bgCanvas.width * bgScale;
+    const bgH = bgCanvas.height * bgScale;
+    const bgX = (W - bgW) / 2;
+    const bgY = (H - bgH) / 2;
+    ctx.drawImage(bgCanvas, bgX, bgY, bgW, bgH);
+  }
+
+  // Ground line
+  ctx.strokeStyle = 'rgba(139,92,42,0.3)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, groundY + 2);
+  ctx.lineTo(W, groundY + 2);
+  ctx.stroke();
+
+  // Draw KNIGHT FIRST (behind — lower z) — use pre-sliced frame
+  if (knightFrames.length > 0) {
+    const frame = knightFrames[knight.anim][Math.min(knight.frame, KNIGHT_COLS - 1)];
+    const drawW = knightFW * knightScale;
+    const drawH = knightFH * knightScale;
+
+    const dx = knight.x - drawW / 2;
+    const dy = groundY - drawH;
+
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    if (knight.facing === -1) {
+      ctx.translate(knight.x, 0);
+      ctx.scale(-1, 1);
+      ctx.translate(-knight.x, 0);
+    }
+    ctx.drawImage(frame, dx, dy, drawW, drawH);
+    ctx.restore();
+  }
+
+  // Draw PIGS ON TOP of knight (higher z) — use pre-sliced frames
+  pigs.forEach(pig => {
+    const frames = (pig.stunned || pig.dying) ? pigDeathFrames : pigWalkFrames;
+    if (frames.length === 0) return;
+    const frame = frames[Math.min(pig.frame, PIG_COLS - 1)];
+
+    const drawW = pigFW * pigScale;
+    const drawH = pigFH * pigScale;
+
+    const dx = pig.x - drawW / 2;
+    const dy = groundY - drawH;
+
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    if (pig.facing === -1) {
+      ctx.translate(pig.x, 0);
+      ctx.scale(-1, 1);
+      ctx.translate(-pig.x, 0);
+    }
+    ctx.drawImage(frame, dx, dy, drawW, drawH);
+    ctx.restore();
+
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.1)';
+    ctx.beginPath();
+    ctx.ellipse(pig.x, groundY + 1, drawW * 0.3, 3, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Angry indicator when stopped
+    if (pig.stopped && !pig.stunned && !pig.dying) {
+      ctx.font = '16px sans-serif';
+      ctx.fillText('💢', pig.x - 8, dy - 8);
+    }
+
+    // Stunned stars spinning above head
+    if (pig.stunned && !pig.dying) {
+      ctx.font = '14px sans-serif';
+      const t = Date.now() / 300;
+      for (let i = 0; i < 3; i++) {
+        const angle = t + i * 2.1;
+        const sx = pig.x + Math.cos(angle) * 20;
+        const sy = dy + 10 + Math.sin(angle) * 10;
+        ctx.fillText('⭐', sx - 7, sy);
+      }
+    }
+  });
+}
+</script>
+</body>
+</html>
