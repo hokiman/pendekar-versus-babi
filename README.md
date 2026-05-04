@@ -4,6 +4,8 @@ A pixel art action game built with HTML5 Canvas — a medieval knight fights pig
 
 **Purpose:** Learning repo for sprite animation — from AI-generated sprite sheets to game-ready animation loops.
 
+**👉 [Play the game!](https://hokiman.github.io/pendekar-versus-babi/)**
+
 ---
 
 ## 🎮 Gameplay
